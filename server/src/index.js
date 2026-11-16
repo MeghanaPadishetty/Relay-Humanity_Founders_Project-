@@ -1,0 +1,29 @@
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import crypto from 'node:crypto';
+import mongoose from 'mongoose';
+import {User,Email} from './models.js';
+import {authUrl,saveGoogleUser,syncInbox,sendGmail} from './google.js';
+import {analyzeEmail,draftReply,summarize,askAboutEmail} from './ai.js';
+const app=express();app.use(helmet());app.use(cors({origin:process.env.CLIENT_URL||'http://localhost:5173'}));app.use(express.json({limit:'1mb'}));
+const sessions=new Map();
+const signState=state=>crypto.createHmac('sha256',process.env.OAUTH_STATE_SECRET||'local-only-change-me').update(state).digest('hex');
+function requireUser(req,res,next){const id=req.header('x-relay-user');if(!id||!mongoose.isValidObjectId(id))return res.status(401).json({error:'Connect your Google account to continue.'});req.userId=id;next();}
+app.get('/api/health',(_req,res)=>res.json({ok:true,service:'Relay API',database:mongoose.connection.readyState===1?'connected':'disconnected',aiConfigured:Boolean(process.env.OPENAI_API_KEY),googleConfigured:Boolean(process.env.GOOGLE_CLIENT_ID&&process.env.GOOGLE_CLIENT_SECRET)}));
+app.get('/api/auth/google',(_req,res)=>{if(!process.env.GOOGLE_CLIENT_ID||!process.env.GOOGLE_CLIENT_SECRET)return res.status(400).json({error:'Add Google OAuth credentials to server/.env first.'});const state=crypto.randomBytes(24).toString('hex');sessions.set(state,signState(state));res.json({url:authUrl(state)});});
+app.get('/api/auth/google/callback',async(req,res)=>{try{const {code,state}=req.query;const expected=sessions.get(state);sessions.delete(state);if(!expected||expected!==signState(state))throw new Error('Invalid or expired OAuth state. Please connect again.');const user=await saveGoogleUser(code);res.redirect(`${process.env.CLIENT_URL||'http://localhost:5173'}/?connected=${encodeURIComponent(user._id)}`);}catch(e){res.redirect(`${process.env.CLIENT_URL||'http://localhost:5173'}/?auth_error=${encodeURIComponent(e.message)}`);}});
+app.get('/api/account',requireUser,async(req,res)=>{const user=await User.findById(req.userId).select('email name');if(!user)return res.status(404).json({error:'Connected account not found.'});res.json({user});});
+app.post('/api/sync',requireUser,async(req,res)=>{try{const user=await User.findById(req.userId);if(!user)return res.status(404).json({error:'Account not found.'});const emails=await syncInbox(user,Math.min(Number(req.body?.maxResults)||40,100));res.json({count:emails.length,emails});}catch(e){res.status(500).json({error:e.message||'Gmail sync failed.'});}});
+app.get('/api/emails',requireUser,async(req,res)=>{const q={userId:req.userId};if(req.query.category)q.category=req.query.category;if(req.query.unread==='true')q.unread=true;const emails=await Email.find(q).sort({receivedAt:-1}).limit(100);res.json({emails});});
+app.patch('/api/emails/:id',requireUser,async(req,res)=>{const allowed=['category','priority','unread','starred','summary','recommendedAction'];const patch={};for(const k of allowed)if(req.body[k]!==undefined)patch[k]=req.body[k];const email=await Email.findOneAndUpdate({_id:req.params.id,userId:req.userId},patch,{new:true});if(!email)return res.status(404).json({error:'Email not found.'});res.json({email});});
+async function ownedEmail(req,res){const email=await Email.findOne({_id:req.params.id,userId:req.userId});if(!email)res.status(404).json({error:'Email not found.'});return email;}
+app.post('/api/emails/:id/analyze',requireUser,async(req,res)=>{try{const email=await ownedEmail(req,res);if(!email)return;const result=await analyzeEmail(email);Object.assign(email,{category:result.category,priority:result.priority,confidence:result.confidence,summary:result.summary,recommendedAction:result.recommendedAction,importantDates:result.importantDates||[],pendingFollowUp:result.pendingFollowUp||''});await email.save();res.json({email,result});}catch(e){res.status(e.status||500).json({error:e.message||'AI analysis failed.'});}});
+app.post('/api/emails/:id/summarize',requireUser,async(req,res)=>{try{const email=await ownedEmail(req,res);if(!email)return;const summary=await summarize(email);email.summary=summary;await email.save();res.json({summary});}catch(e){res.status(e.status||500).json({error:e.message||'Summary failed.'});}});
+app.post('/api/emails/:id/ask',requireUser,async(req,res)=>{try{const email=await ownedEmail(req,res);if(!email)return;const question=String(req.body?.question||'').trim();if(!question)return res.status(400).json({error:'Enter a question about this email.'});const answer=await askAboutEmail(email,question);res.json({answer});}catch(e){res.status(e.status||500).json({error:e.message||'Could not answer that question.'});}});
+app.post('/api/emails/:id/draft',requireUser,async(req,res)=>{try{const email=await ownedEmail(req,res);if(!email)return;const draft=await draftReply(email,req.body?.style);res.json({draft});}catch(e){res.status(e.status||500).json({error:e.message||'Draft generation failed.'});}});
+app.post('/api/send',requireUser,async(req,res)=>{try{const {to,subject,body,threadId}=req.body;if(!to||!subject||!body)return res.status(400).json({error:'Recipient, subject and message are required.'});const user=await User.findById(req.userId);const result=await sendGmail(user,{to,subject,body,threadId});res.json({sent:true,messageId:result.id});}catch(e){res.status(500).json({error:e.message||'Email could not be sent.'});}});
+app.use((err,_req,res,_next)=>{console.error(err);res.status(500).json({error:'Unexpected server error.'});});
+const port=process.env.PORT||5000;
+try{if(process.env.MONGODB_URI)await mongoose.connect(process.env.MONGODB_URI);else console.warn('MONGODB_URI missing; database features unavailable.');app.listen(port,()=>console.log(`Relay API running on http://localhost:${port}`));}catch(e){console.error('Could not connect to MongoDB:',e.message);process.exit(1);}
