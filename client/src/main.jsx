@@ -2,7 +2,7 @@ import React,{useEffect,useMemo,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Activity,Archive,ArrowUpRight,Check,ChevronRight,Clock3,Inbox,Mail,Plus,RefreshCw,Search,Send,Settings2,ShieldCheck,Sparkles,Star,Users,X,AlertCircle,LogOut,ExternalLink} from 'lucide-react';
 import './styles.css';
-const API='/api';
+const API = import.meta.env.VITE_API_URL || '/api';
 const samples=[
 {id:'demo1',from:'olivia@northstar.vc',fromName:'Olivia Chen',subject:'Re: Series A — final partner review',snippet:'Could Rahul confirm the revised allocation and board observer rights?',body:'Hi Priya,\n\nBefore we circulate the revised term sheet, could Rahul confirm the updated allocation and proposed board observer rights? It would be helpful to have his personal confirmation by tomorrow afternoon.\n\nBest,\nOlivia',category:'client',priority:'high',unread:true,receivedAt:new Date(),summary:'Northstar Ventures needs the account owner’s approval on investment allocation and board observer rights by tomorrow.',recommendedAction:'Forward to the account owner for a decision. Do not confirm terms on their behalf.'},
 {id:'demo2',from:'daniel@brightlineevents.com',fromName:'Daniel Foster',subject:'Updated itinerary for Thursday',snippet:'I have moved the car pickup to 8:15 AM and attached the revised schedule.',body:'Hello,\n\nI have moved the car pickup to 8:15 AM and revised the schedule for Thursday. Please let me know if you need anything else.\n\nThanks,\nDaniel',category:'assistant',priority:'normal',unread:true,receivedAt:new Date(Date.now()-3600000),summary:'Event coordinator updated Thursday’s itinerary and car pickup.',recommendedAction:'Confirm receipt and update the calendar.'},
